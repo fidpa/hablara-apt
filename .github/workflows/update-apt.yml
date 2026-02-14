@@ -217,30 +217,27 @@ jobs:
 
       - name: Create index page
         run: |
-          cat > index.html <<'HTMLEOF'
-<!DOCTYPE html>
-<html>
-<head><title>Hablara APT Repository</title></head>
-<body>
-<h1>Hablara APT Repository</h1>
-<h2>Quick Setup</h2>
-<pre><code>curl -fsSL https://fidpa.github.io/hablara-apt/pubkey.asc \
-  | sudo gpg --dearmor -o /usr/share/keyrings/hablara-archive-keyring.gpg
-
-echo "Types: deb
-URIs: https://fidpa.github.io/hablara-apt
-Suites: stable
-Components: main
-Architectures: amd64 arm64
-Signed-By: /usr/share/keyrings/hablara-archive-keyring.gpg" \
-  | sudo tee /etc/apt/sources.list.d/hablara.sources
-
-sudo apt update && sudo apt install hablara
-</code></pre>
-<p>Or install from <a href="https://github.com/fidpa/hablara/releases">GitHub Releases</a> - the .deb package registers this repository automatically.</p>
-</body>
-</html>
-HTMLEOF
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html><head><title>Hablara APT Repository</title></head><body>'
+            echo '<h1>Hablara APT Repository</h1>'
+            echo '<h2>Quick Setup</h2>'
+            echo '<pre><code>curl -fsSL https://fidpa.github.io/hablara-apt/pubkey.asc \'
+            echo '  | sudo gpg --dearmor -o /usr/share/keyrings/hablara-archive-keyring.gpg'
+            echo ''
+            echo 'echo "Types: deb'
+            echo 'URIs: https://fidpa.github.io/hablara-apt'
+            echo 'Suites: stable'
+            echo 'Components: main'
+            echo 'Architectures: amd64 arm64'
+            echo 'Signed-By: /usr/share/keyrings/hablara-archive-keyring.gpg" \'
+            echo '  | sudo tee /etc/apt/sources.list.d/hablara.sources'
+            echo ''
+            echo 'sudo apt update &amp;&amp; sudo apt install hablara'
+            echo '</code></pre>'
+            echo '<p>Or install from <a href="https://github.com/fidpa/hablara/releases">GitHub Releases</a>.</p>'
+            echo '</body></html>'
+          } > index.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e  # v4.0.0
