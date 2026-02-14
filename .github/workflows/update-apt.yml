@@ -5,7 +5,7 @@
 # Downloads .deb from GitHub Release, imports into reprepro, deploys via GitHub Pages.
 #
 # Trigger: repository_dispatch (event_type: update-apt-repo)
-# Payload: { version: "v1.2.5", arch: "amd64" | "arm64" }
+# Payload: { version: "v1.2.7", arch: "amd64" | "arm64" | "both" }
 #
 # Secrets:
 #   APT_GPG_PRIVATE_KEY - Armored GPG private key for signing
