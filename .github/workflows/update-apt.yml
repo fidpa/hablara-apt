@@ -111,6 +111,7 @@ jobs:
           Components: main
           Description: Hablara Voice Intelligence Platform - APT Repository
           SignWith: default
+          Override: override.stable
           CONF
           # Remove leading whitespace from heredoc
           sed -i 's/^          //' conf/distributions
@@ -120,6 +121,9 @@ jobs:
           basedir .
           CONF
           sed -i 's/^          //' conf/options
+
+          # Override file: provides default Section for packages missing it
+          echo "hablara optional sound" > conf/override.stable
 
       - name: Import GPG key
         env:
