@@ -12,9 +12,10 @@
 #   APT_GPG_PASSPHRASE  - Passphrase for the GPG key (optional)
 #   HABLARA_REPO_TOKEN  - PAT with repo scope for downloading from fidpa/hablara releases
 #
-# State Persistence:
-#   reprepro database (db/, dists/, pool/) is persisted on the gh-pages branch.
-#   Each run checks out gh-pages, imports new .deb, re-deploys.
+# Deploy Strategy:
+#   Uses actions/deploy-pages (artifact-based) instead of git push to gh-pages.
+#   This bypasses GitHub's 100MB file size limit for git objects.
+#   Each deployment rebuilds the repo from scratch (latest version only).
 # ============================================================================
 
 name: Update APT Repository
@@ -27,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v1.2.5)'
+        description: 'Version tag (e.g., v1.2.7)'
         required: true
         type: string
       arch:
@@ -40,33 +41,25 @@ on:
           - both
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
 concurrency:
   group: apt-repo-update
-  cancel-in-progress: false  # Don't cancel in-progress updates (serialized amd64 → arm64)
+  cancel-in-progress: false
 
 jobs:
   update-repo:
     name: Update APT Repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      # Checkout gh-pages branch to preserve existing reprepro state (pool/, dists/, db/)
-      # Falls back to main if gh-pages doesn't exist yet (first run)
-      - name: Checkout repository state
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          ref: gh-pages
-          fetch-depth: 1
-        continue-on-error: true
-        id: checkout-ghpages
-
-      - name: Fallback to main branch (first run)
-        if: steps.checkout-ghpages.outcome == 'failure'
+      - name: Checkout main (for conf/)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Determine version and architecture
@@ -80,13 +73,12 @@ jobs:
             ARCH="${{ inputs.arch }}"
           fi
 
-          # Validate version format (prevent injection from repository_dispatch)
+          # Validate version format (prevent injection)
           if ! echo "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "ERROR: Invalid version format: $VERSION (expected: vX.Y.Z)"
             exit 1
           fi
 
-          # Validate architecture (prevent injection from repository_dispatch)
           if ! echo "$ARCH" | grep -qE '^(amd64|arm64|both)$'; then
             echo "ERROR: Invalid architecture: $ARCH (expected: amd64, arm64, or both)"
             exit 1
@@ -99,11 +91,10 @@ jobs:
       - name: Install reprepro
         run: sudo apt-get update && sudo apt-get install -y reprepro
 
-      - name: Ensure reprepro config exists
+      - name: Setup reprepro workspace
         run: |
-          # Create conf/ if not present (first run or fresh branch)
-          mkdir -p conf
-          cat > conf/distributions <<'CONF'
+          mkdir -p workspace/conf
+          cat > workspace/conf/distributions <<'EOF'
           Origin: Hablara
           Label: Hablara
           Codename: stable
@@ -111,18 +102,14 @@ jobs:
           Components: main
           Description: Hablara Voice Intelligence Platform - APT Repository
           SignWith: default
-          CONF
-          # Remove leading whitespace from heredoc
-          sed -i 's/^          //' conf/distributions
+          EOF
+          sed -i 's/^          //' workspace/conf/distributions
 
-          cat > conf/options <<'CONF'
+          cat > workspace/conf/options <<'EOF'
           verbose
           basedir .
-          CONF
-          sed -i 's/^          //' conf/options
-
-          # Override file: provides default Section for packages missing it
-          echo "hablara optional sound" > conf/override.stable
+          EOF
+          sed -i 's/^          //' workspace/conf/options
 
       - name: Import GPG key
         env:
@@ -136,12 +123,10 @@ jobs:
 
           echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
 
-          # Configure gpg-agent for non-interactive signing
           mkdir -p ~/.gnupg
           echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
           gpg-connect-agent reloadagent /bye 2>/dev/null || true
 
-          # If passphrase is set, cache it
           if [ -n "$APT_GPG_PASSPHRASE" ]; then
             KEY_GRIP=$(gpg --list-secret-keys --with-keygrip 2>/dev/null | grep -A1 "sec" | grep "Keygrip" | awk '{print $3}' | head -1)
             if [ -n "$KEY_GRIP" ]; then
@@ -163,19 +148,12 @@ jobs:
 
           download_deb() {
             local arch=$1
-            local deb_arch
-            case "$arch" in
-              amd64) deb_arch="amd64" ;;
-              arm64) deb_arch="arm64" ;;
-              *) echo "ERROR: Unknown arch: $arch"; exit 1 ;;
-            esac
-
-            echo "Downloading .deb for ${deb_arch} from release ${VERSION}..."
+            echo "Downloading .deb for ${arch} from release ${VERSION}..."
             gh release download "$VERSION" \
               -R fidpa/hablara \
-              -p "*_${deb_arch}.deb" \
+              -p "*_${arch}.deb" \
               -D incoming/ \
-              || { echo "ERROR: Failed to download .deb for $deb_arch"; exit 1; }
+              || { echo "ERROR: Failed to download .deb for $arch"; exit 1; }
           }
 
           if [ "$ARCH" = "both" ]; then
@@ -189,13 +167,13 @@ jobs:
           ls -lh incoming/
 
       - name: Import into reprepro
+        working-directory: workspace
         run: |
-          for deb in incoming/*.deb; do
+          for deb in ../incoming/*.deb; do
             if [ -f "$deb" ]; then
               echo "Importing: $(basename "$deb")"
-              # Handle duplicate versions gracefully (re-run scenario)
               reprepro --basedir . -S sound includedeb stable "$deb" || {
-                echo "Warning: Import failed for $(basename "$deb"), attempting replace..."
+                echo "Warning: Import failed, attempting replace..."
                 PKG_NAME=$(dpkg-deb --field "$deb" Package)
                 reprepro --basedir . remove stable "$PKG_NAME" 2>/dev/null || true
                 reprepro --basedir . -S sound includedeb stable "$deb"
@@ -203,15 +181,14 @@ jobs:
             fi
           done
 
-          # Cleanup incoming
-          rm -rf incoming
+          rm -rf ../incoming
 
           echo "Repository contents:"
           reprepro --basedir . list stable
 
       - name: Export GPG public key
+        working-directory: workspace
         run: |
-          # Export only the signing key (not all keys in keyring)
           KEY_ID=$(gpg --list-secret-keys --keyid-format long 2>/dev/null \
             | grep "sec" | head -1 | awk '{print $2}' | cut -d'/' -f2)
           gpg --armor --export "$KEY_ID" > pubkey.asc
@@ -219,6 +196,7 @@ jobs:
           echo "Public key exported (Key ID: $KEY_ID)"
 
       - name: Create index page
+        working-directory: workspace
         run: |
           {
             echo '<!DOCTYPE html>'
@@ -242,11 +220,27 @@ jobs:
             echo '</body></html>'
           } > index.html
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e  # v4.0.0
+      - name: Prepare deployment directory
+        run: |
+          mkdir -p deploy
+          # Copy only the files needed for the APT repo (not conf/, db/, .github/)
+          cp -r workspace/dists deploy/
+          cp -r workspace/pool deploy/
+          cp workspace/pubkey.asc deploy/
+          cp workspace/pubkey.gpg deploy/
+          cp workspace/index.html deploy/
+          touch deploy/.nojekyll
+
+          echo "Deployment contents:"
+          find deploy -type f | head -30
+          echo "Total size:"
+          du -sh deploy/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3.0.1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
-          exclude_assets: '.github,incoming,*.md'
-          keep_files: false
-          force_orphan: false
+          path: deploy
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac553fd0d31  # v4.0.5
