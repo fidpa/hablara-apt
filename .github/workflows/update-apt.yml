@@ -191,11 +191,11 @@ jobs:
             if [ -f "$deb" ]; then
               echo "Importing: $(basename "$deb")"
               # Handle duplicate versions gracefully (re-run scenario)
-              reprepro --basedir . includedeb stable "$deb" || {
+              reprepro --basedir . --ignore=missingfield includedeb stable "$deb" || {
                 echo "Warning: Import failed for $(basename "$deb"), attempting replace..."
                 PKG_NAME=$(dpkg-deb --field "$deb" Package)
                 reprepro --basedir . remove stable "$PKG_NAME" 2>/dev/null || true
-                reprepro --basedir . includedeb stable "$deb"
+                reprepro --basedir . --ignore=missingfield includedeb stable "$deb"
               }
             fi
           done
